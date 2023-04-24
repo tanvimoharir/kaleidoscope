@@ -14,15 +14,15 @@
 //The lexer returns tokens [0-255] if it is an unknown character, otherwise one of these things.
 
 enum Token {
-	tok_eof = -1;
+	tok_eof = -1,
 
 	//commands
-	tok_def = -2;
-	tok_extern = -3;
+	tok_def = -2,
+	tok_extern = -3,
 
 	//primary
-	tok_identifier = -4;
-	tok_number = -5;
+	tok_identifier = -4,
+	tok_number = -5,
 };
 
 static std::string IdentifierStr; //filled in if tok_identifier
@@ -39,7 +39,7 @@ static int gettok() {
 	if (isalpha(LastChar)) {
 		IdentifierStr = LastChar;
 		while (isalnum((LastChar = getchar())))
-			IdentifierStr += LastChar
+			IdentifierStr += LastChar;
 
 		if (IdentifierStr == "def")
 			return tok_def;
