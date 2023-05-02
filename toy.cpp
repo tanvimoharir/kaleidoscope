@@ -459,9 +459,10 @@ Function *PrototypeAST::codegen() {
 
 Function *FunctionAST::codegen() {
 	//First check for existing function from a previos 'extern' declaration'
-	Function *TheFunction = TheModule->getFunction(Proto->getName());
-	if (!TheFunction)
-		TheFunction = Proto->codegen();
+	//Function *TheFunction = TheModule->getFunction(Proto->getName());
+	//if (!TheFunction)
+		//TheFunction = Proto->codegen();
+	Function *TheFunction = Proto->codegen();
 
 	if (!TheFunction)
 		return nullptr;
