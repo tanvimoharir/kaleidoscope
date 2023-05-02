@@ -1,3 +1,4 @@
+#include "include/KaleidoscopeJIT.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/BasicBlock.h"
@@ -16,6 +17,7 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/GVN.h"
 #include <algorithm>
+#include <cassert>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -25,6 +27,7 @@
 #include <vector>
 
 using namespace llvm;
+using namespace llvm::orc;
 
 //--------------------------------
 //Lexer
@@ -391,9 +394,24 @@ static std::unique_ptr<Module> TheModule;
 static std::unique_ptr<IRBuilder<>> Builder;
 static std::map<std::string, Value *> NamedValues;
 static std::unique_ptr<legacy::FunctionPassManager> TheFPM;
+static std::unique_ptr<KaleidoscopeJIT> TheJIT;
+static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
+static ExitOnError ExitOnErr;
 
 Value *LogErrorV(const char *Str) {
 	LogError(Str);
+	return nullptr;
+}
+
+Function *getFunction(std::string Name) {
+	//First see if func has been added to current module
+	if (auto *F = TheModule->getFunction(Name))
+		return F;
+	// if not check if we can codegen the declaration of prototype
+	auto FI = FunctionProtos.find(Name);
+	if (FI != FunctionProtos.end())
+		return FI->second->codegen();
+	//if not existing prototuype exist return null
 	return nullptr;
 }
 
@@ -435,7 +453,7 @@ Value *BinaryExprAST::codegen() {
 
 Value *CallExprAST::codegen() {
 	//Look up the name in the global module table
-	Function *CalleeF = TheModule->getFunction(Callee);
+	Function *CalleeF = getFunction(Callee);
 	if (!CalleeF)
 		return LogErrorV("Unknown function referenced");
 	//if argument mismatch error
@@ -465,11 +483,11 @@ Function *PrototypeAST::codegen() {
 
 
 Function *FunctionAST::codegen() {
-	//First check for existing function from a previos 'extern' declaration'
-	Function *TheFunction = TheModule->getFunction(Proto->getName());
-	if (!TheFunction)
-		TheFunction = Proto->codegen();
-	//Function *TheFunction = Proto->codegen();
+	//Transfer ownership of prototype to funcprtos map,
+	// but keep reference for use
+	auto &P = *Proto;
+	FunctionProtos[Proto->getName()] = std::move(Proto);
+	Function *TheFunction = getFunction(P.getName());
 
 	if (!TheFunction)
 		return nullptr;
@@ -509,7 +527,8 @@ static void InitializeModuleAndPassManager() {
 	//Open a new context and module.
 	TheContext = std::make_unique<LLVMContext>();
 	TheModule = std::make_unique<Module>("my cool jit", *TheContext);
-	
+	TheModule->setDataLayout(TheJIT->getDataLayout());	
+
 	// Create a new builder for the module.
 	Builder = std::make_unique<IRBuilder<>>(*TheContext);
 
@@ -539,6 +558,8 @@ static void HandleDefinition() {
 			fprintf(stderr, "Read function definition:");
 			FnIR->print(errs());
 			fprintf(stderr, "\n");
+			ExitOnErr(TheJIT->addModule(ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
+			InitializeModuleAndPassManager();
 		}
 	} else {
 	//skip token for error recover
@@ -552,6 +573,7 @@ static void HandleExtern() {
 			fprintf(stderr, "Read extern:");
 			FnIR->print(errs());
 			fprintf(stderr, "\n");
+			FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
 		}
 	} else {
 		getNextToken(); //skip token for error reco
@@ -559,15 +581,31 @@ static void HandleExtern() {
 }
 
 static void HandleTopLevelExpr() {
+	//Evaluate a top-level expr into an anonymous func.
 	if (auto FnAST = ParseTopLevelExpr()) {
-        	if (auto *FnIR = FnAST->codegen()) {
-                	fprintf(stderr, "Read top level  expr:");
-			FnIR->print(errs());
-			fprintf(stderr, "\n");
+        	if (FnAST->codegen()) {
+		//Create a resource tracker to track JIT'd memory allocated to our
+		// anonyms expr -- that way we can free after executing.
+		auto RT = TheJIT->getMainJITDylib().createResourceTracker();
+		auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
+		ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
+		InitializeModuleAndPassManager();
+
+		// Search the JIT for the __anon__expr symbol.
+		auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
+		assert(ExprSymbol && "Function not found");
+
+		// Get the symbol's address and cast it to the right type (takes no
+		// arguments, returns a double so we can call itas a native function.
+		double (*FP)() = (double (*)())(intptr_t)ExprSymbol.getAddress();
+		fprintf(stderr, "Evaluated to %f\n", FP());
+
+		//Delete the anonymous expr module from the JIT.
+		ExitOnErr(RT->remove());
+		}
+	} else {
+		getNextToken();
 	}
-        } else {
-                getNextToken(); //skip token for error reco
-        }
 }
 
 /// top ::= definition | external | expression | ';'
@@ -593,11 +631,16 @@ static void MainLoop() {
 	}
 }
 
+
 //===-------------------------------
 // Main driver code
 //===-------------------------------
 
 int main() {
+	InitializeNativeTarget();
+	InitializeNativeTargetAsmPrinter();
+	InitializeNativeTargetAsmParser();
+
 	//Install standard binary operators
 	//1 is the lowest precedence
 	BinopPrecedence['<'] = 10;
@@ -608,6 +651,8 @@ int main() {
 	//Prime the first token
 	fprintf(stderr, "ready> ");
 	getNextToken();
+
+	TheJIT = ExitOnErr(KaleidoscopeJIT::Create());
 
 	//Make the module which holds all the code.
 	InitializeModuleAndPassManager();
