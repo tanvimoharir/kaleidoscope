@@ -12,12 +12,13 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/MC/TargetRegistry.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
-#include "llvm/Transforms/InstCombine/InstCombine.h"
-#include "llvm/Transforms/Scalar.h"
-#include "llvm/Transforms/Scalar/GVN.h"
-#include "llvm/Transforms/Utils.h"
+#include "llvm/Target/TargetOptions.h"
+#include "llvm/TargetParser/Host.h"
 #include <algorithm>
 #include <cassert>
 #include <cctype>
@@ -30,7 +31,7 @@
 #include <vector>
 
 using namespace llvm;
-using namespace llvm::orc;
+using namespace llvm::sys;
 
 //--------------------------------
 //Lexer
@@ -662,8 +663,8 @@ static std::unique_ptr<LLVMContext> TheContext;
 static std::unique_ptr<Module> TheModule;
 static std::unique_ptr<IRBuilder<>> Builder;
 static std::map<std::string, AllocaInst*> NamedValues;
-static std::unique_ptr<legacy::FunctionPassManager> TheFPM;
-static std::unique_ptr<KaleidoscopeJIT> TheJIT;
+//static std::unique_ptr<legacy::FunctionPassManager> TheFPM;
+//static std::unique_ptr<KaleidoscopeJIT> TheJIT;
 static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 static ExitOnError ExitOnErr;
 
@@ -1000,7 +1001,7 @@ Function *FunctionAST::codegen() {
 	verifyFunction(*TheFunction);
 
 	// Optimize the function
-	TheFPM->run(*TheFunction);
+	//TheFPM->run(*TheFunction);
 
 	return TheFunction;
 	}
@@ -1019,30 +1020,30 @@ static void InitializeModuleAndPassManager() {
 	//Open a new context and module.
 	TheContext = std::make_unique<LLVMContext>();
 	TheModule = std::make_unique<Module>("my cool jit", *TheContext);
-	TheModule->setDataLayout(TheJIT->getDataLayout());	
+	//TheModule->setDataLayout(TheJIT->getDataLayout());	
 
 	// Create a new builder for the module.
 	Builder = std::make_unique<IRBuilder<>>(*TheContext);
 
 	// Create a new pass manager attached to it
-	TheFPM = std::make_unique<legacy::FunctionPassManager>(TheModule.get());
+	//TheFPM = std::make_unique<legacy::FunctionPassManager>(TheModule.get());
 	
 	// Promote allocas to registers
-	TheFPM->add(createPromoteMemoryToRegisterPass());
+	//TheFPM->add(createPromoteMemoryToRegisterPass());
 
 	//do simple peephole optimizations and bit tweedling optiond
-	TheFPM->add(createInstructionCombiningPass());
+	//TheFPM->add(createInstructionCombiningPass());
 
 	// Reassociate expressions
-	TheFPM->add(createReassociatePass());
+	//TheFPM->add(createReassociatePass());
 
 	// Eliminate common subexpressions
-	TheFPM->add(createGVNPass());
+	//TheFPM->add(createGVNPass());
 
 	// Simplify the control flow graph (deleteing unreachable nodes
-	TheFPM->add(createCFGSimplificationPass());
+	//TheFPM->add(createCFGSimplificationPass());
 
-	TheFPM->doInitialization();
+	//TheFPM->doInitialization();
 }
 	
 
@@ -1053,8 +1054,8 @@ static void HandleDefinition() {
 			fprintf(stderr, "Read function definition:");
 			FnIR->print(errs());
 			fprintf(stderr, "\n");
-			ExitOnErr(TheJIT->addModule(ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
-			InitializeModuleAndPassManager();
+			//ExitOnErr(TheJIT->addModule(ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
+			//InitializeModuleAndPassManager();
 		}
 	} else {
 	//skip token for error recover
@@ -1078,26 +1079,27 @@ static void HandleExtern() {
 static void HandleTopLevelExpr() {
 	//Evaluate a top-level expr into an anonymous func.
 	if (auto FnAST = ParseTopLevelExpr()) {
-        	if (FnAST->codegen()) {
-		//Create a resource tracker to track JIT'd memory allocated to our
-		// anonyms expr -- that way we can free after executing.
-		auto RT = TheJIT->getMainJITDylib().createResourceTracker();
-		auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
-		ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
-		InitializeModuleAndPassManager();
+		FnAST->codegen();
+        // 	if (FnAST->codegen()) {
+		// //Create a resource tracker to track JIT'd memory allocated to our
+		// // anonyms expr -- that way we can free after executing.
+		// auto RT = TheJIT->getMainJITDylib().createResourceTracker();
+		// auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
+		// ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
+		// InitializeModuleAndPassManager();
 
-		// Search the JIT for the __anon__expr symbol.
-		auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
-		assert(ExprSymbol && "Function not found");
+		// // Search the JIT for the __anon__expr symbol.
+		// auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
+		// assert(ExprSymbol && "Function not found");
 
-		// Get the symbol's address and cast it to the right type (takes no
-		// arguments, returns a double so we can call itas a native function.
-		double (*FP)() = (double (*)())(intptr_t)ExprSymbol.getAddress();
-		fprintf(stderr, "Evaluated to %f\n", FP());
+		// // Get the symbol's address and cast it to the right type (takes no
+		// // arguments, returns a double so we can call itas a native function.
+		// double (*FP)() = (double (*)())(intptr_t)ExprSymbol.getAddress();
+		// fprintf(stderr, "Evaluated to %f\n", FP());
 
-		//Delete the anonymous expr module from the JIT.
-		ExitOnErr(RT->remove());
-		}
+		// //Delete the anonymous expr module from the JIT.
+		// ExitOnErr(RT->remove());
+		// }
 	} else {
 		getNextToken();
 	}
@@ -1154,9 +1156,9 @@ extern "C" DLLEXPORT double printd(double X) {
 //===-------------------------------
 
 int main() {
-	InitializeNativeTarget();
-	InitializeNativeTargetAsmPrinter();
-	InitializeNativeTargetAsmParser();
+	// InitializeNativeTarget();
+	// InitializeNativeTargetAsmPrinter();
+	// InitializeNativeTargetAsmParser();
 
 	//Install standard binary operators
 	//1 is the lowest precedence
@@ -1170,7 +1172,7 @@ int main() {
 	fprintf(stderr, "ready> ");
 	getNextToken();
 
-	TheJIT = ExitOnErr(KaleidoscopeJIT::Create());
+	//TheJIT = ExitOnErr(KaleidoscopeJIT::Create());
 
 	//Make the module which holds all the code.
 	InitializeModuleAndPassManager();
@@ -1178,7 +1180,59 @@ int main() {
 	//Run the main "interpreter loop" now
 	MainLoop();
 
+	//Initialize target registry
+	InitializeAllTargetInfos();
+	InitializeAllTargets();
+	InitializeAllTargetMCs();
+	InitializeAllAsmParsers();
+	InitializeAllAsmPrinters();
+
+	auto TargetTriple = sys::getDefaultTargetTriple();
+	TheModule->setTargetTriple(TargetTriple);
+
+	std::string Error;
+	auto Target = TargetRegistry::lookupTarget(TargetTriple, Error);
+	//Print error and exit if we couldnt find the requested target
+	// This generally occurs if weve forgotten to initialise the
+	// TargetRegistry or we have a bogus target triple
+	if (!Target) {
+		errs() << Error;
+		return 1;
+	}
+
+	auto CPU = "generic";
+	auto Features = "";
+
+	TargetOptions opt;
+	auto RM = std::optional<Reloc::Model>();
+	auto TheTargetMachine = Target->createTargetMachine(TargetTriple, CPU, Features, opt, RM);
+
+	TheModule->setDataLayout(TheTargetMachine->createDataLayout());
+
+	auto Filename = "output.o";
+	std::error_code EC;
+	raw_fd_ostream dest(Filename, EC, sys::fs::OF_None);
+
+	if (EC) {
+		errs() << "Could not open file: " << EC.message();
+		return 1;
+	}
+
+	legacy::PassManager pass;
+	auto FileType = CGFT_ObjectFile;
+
+	if (TheTargetMachine->addPassesToEmitFile(pass, dest, nullptr, FileType)){
+		errs() << "TheTargetMAchine cant emit a file of this type";
+		return 1;
+	}
+
+	pass.run(*TheModule);
+	dest.flush();
+
+	outs() << "Wrote " << Filename << "\n";
+
+	return 0;
+
 	//Print out all of the generated code
 	//TheModule->print(errs(), nullptr);
-	return 0;
 }
